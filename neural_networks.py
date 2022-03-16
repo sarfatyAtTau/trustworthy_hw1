@@ -20,7 +20,7 @@ class Model:
         Perform the forward pass on a batch of inputs, and return
         the outputs of the last layer (batch_size X n_classes).
         """
-        x = inputs
+        x = inputs.reshape(-1, 1, inputs.shape[-1])
         for layer in self.layers:
             x = layer.forward(x)
         return x
@@ -33,7 +33,33 @@ class Model:
         the state (e.g., to update layer parameters). If loss is
         not provided, use the built-in model loss (i.e., self.loss).
         """
-        pass
+
+        pred = x.reshape(-1, 1, x.shape[-1])
+        for layer in self.layers:
+            pred = layer.forward(pred, store=True)
+        if loss is None:
+            loss = self.loss
+
+        assert pred.shape[0] == y.shape[0], "Batch dimension problem"
+        if loss == 'mse':
+            # loss = (pred - y)^2
+            dl_dpred = 2 * (pred - y.reshape(y.shape[0], 1, -1))
+
+        elif loss == 'cce':
+            # loss = -sum_over_i(y_i * log(pred_i))
+            # dl_dpred_i = -y_i/pred_i
+            dl_dpred = np.zeros((y.shape[0], 1, pred.shape[-1]))
+            for sample in range(y.shape[0]):
+                dl_dpred[sample][0][y[sample]] = - 1/pred[sample][0][y[sample]]
+        else:
+            assert False, "Should not get here"
+
+        dldo = np.transpose(dl_dpred, axes=[0, 2, 1])
+        for layer in reversed(self.layers):
+            dldo = layer.backward(dldo)
+            if clear_state:
+                layer.clear_state()
+        return dldo
 
     def fit_step(self, x_train, y_train):
         """
@@ -41,7 +67,9 @@ class Model:
         compute the gradients w.r.t. layer parameters, and perform
         the SGD update (on a sinlge batch).
         """
-        pass
+        self.compute_dldi(x_train, y_train, clear_state=False)
+        for layer in self.layers:
+            layer.update_params(self.lr)
 
     def save_weights(self, fpath):
         """
@@ -72,7 +100,7 @@ class Model:
 class Layer:
 
     def __init__(self):
-        self.input = 0
+        self.state = 0
 
     def forward(self, inputs, store=False):
         """
@@ -80,7 +108,8 @@ class Layer:
         to True, then store the necessary state to perform a
         backward computation.
         """
-        pass
+        if store:
+            self.state = inputs
 
     def backward(self, dldo):
         """
@@ -102,7 +131,7 @@ class Layer:
         """
         Clear the internal state stored in a previous forward pass
         """
-        pass
+        self.state = 0
 
 class DenseLayer(Layer):
     """
@@ -110,7 +139,7 @@ class DenseLayer(Layer):
     output_dim outputs
     """
     def __init__(self, input_dim, output_dim, init_sigma=0.05):
-        super.__init__()
+        super(DenseLayer, self).__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
         # rand init
@@ -121,40 +150,53 @@ class DenseLayer(Layer):
         self.db = 0
 
     def forward(self, inputs, store=False):
-        x = np.add(np.matmul(self.W, inputs), self.b)
-        if store:
-            self.input = inputs
+        assert not np.isnan(inputs).any()
+        super(DenseLayer, self).forward(inputs, store)
+        assert len(inputs.shape) == 3 and inputs.shape[1] == 1 and inputs.shape[2] == self.input_dim, "Dimesions problem"
+        return np.add(np.matmul(inputs, self.W), self.b)
+
 
     def backward(self, dldo):
         # calculate grads for back prop
-        dodi = np.matmul(self.W.T, dldo)
+        assert len(dldo.shape) == 3 and dldo.shape[1] == self.output_dim and dldo.shape[2] == 1, "Dimesions problem"
+        dldi = np.matmul(self.W, dldo)
 
         # internal updates
-        # TODO: average over batch
-        self.dW = np.matmul(dldo.reshape(-1, 1), self.input.reshape(1, -1))
-        self.db = dldo
-        return dodi
+        self.dW = np.mean(np.matmul(np.transpose(self.state, axes=[0, 2, 1]), np.transpose(dldo, axes=[0, 2, 1])), axis=0)
+        self.db = np.mean(np.transpose(dldo, axes=[0, 2, 1]), axis=0)
+
+        assert len(dldi.shape) == 3 and dldi.shape[1] == self.input_dim and dldi.shape[2] == 1, "Dimesions problem"
+        return dldi
 
     def update_params(self, lr):
         self.W = self.W - lr * self.dW
         self.b = self.b - lr * self.db
 
     def clear_state(self):
-        pass
+        super(DenseLayer, self).clear_state()
 
 
 class SigmoidActLayer(Layer):
     """
     The Sigmoid activation function
     """
+
+    def sigmoid_func(self, x):
+        return 1/(1 + np.exp(-x))
+
     def forward(self, inputs, store=False):
-        pass
+        sigmoid = self.sigmoid_func(inputs)
+        super(SigmoidActLayer, self).forward(sigmoid, store)
+        return sigmoid
 
     def backward(self, dldo):
-        pass
+        assert len(dldo.shape) == 3 and len(self.state.shape) == 3, "Dimesions problem"
+        assert dldo.shape[0] == self.state.shape[0] and dldo.shape[1] == self.state.shape[2] and dldo.shape[2] == self.state.shape[1], "Dimesions problem"
+        grad = np.multiply(self.state, 1-self.state)
+        return np.multiply(dldo, np.transpose(grad, axes=[0, 2, 1]))
 
     def clear_state(self):
-        pass
+        super(SigmoidActLayer, self).clear_state()
 
 
 class ReLUActLayer(Layer):
@@ -163,20 +205,17 @@ class ReLUActLayer(Layer):
     """
 
     def __init__(self):
-        super.__init__()
+        super(ReLUActLayer, self).__init__()
 
     def forward(self, inputs, store=False):
-        if store:
-            self.input = inputs
-        # TODO: ReLU in Numpy
-        return np.max(0, inputs)
+        super(ReLUActLayer, self).forward(inputs, store)
+        return np.maximum(0, inputs)
 
     def backward(self, dldo):
-        # TODO: ReLU in Numpy
-        return np.sign(np.max(0, self.input))
+        return np.multiply(np.transpose(np.sign(np.maximum(0, self.state)), axes=[0, 2, 1]), dldo)
 
     def clear_state(self):
-        pass
+        super(ReLUActLayer, self).clear_state()
 
 class SoftmaxActLayer(Layer):
     """
@@ -184,13 +223,26 @@ class SoftmaxActLayer(Layer):
     (set to 1, by default).
     """
     def __init__(self, T=1):
+        super(SoftmaxActLayer, self).__init__()
         self.T = T
 
     def forward(self, inputs, store=False):
-        pass
+        exp_inputs = np.exp(inputs)
+        sum_of_exps = np.sum(exp_inputs, axis=2, keepdims=True)
+        output = exp_inputs/sum_of_exps
+        if store:
+            self.state = output
+        return output
 
     def backward(self, dldo):
-        pass
+        assert len(dldo.shape) == 3 and len(self.state.shape) == 3, "Dimesions problem"
+        assert dldo.shape[0] == self.state.shape[0] and dldo.shape[1] == self.state.shape[2] and dldo.shape[2] == self.state.shape[1], "Dimesions problem"
+        s_diag = np.zeros((self.state.shape[0], self.state.shape[-1], self.state.shape[-1]))
+        for sample in range(self.state.shape[0]):
+            s_diag[sample] = np.diag(self.state[sample].flatten())
+        dsdi = s_diag - np.matmul(np.transpose(self.state, axes=[0, 2, 1]), self.state)
+        dldi = np.matmul(dsdi, dldo)
+        return dldi
 
     def clear_state(self):
-        pass
+        self.state = 0

@@ -18,7 +18,7 @@ x_test = x_test.reshape((len(x_test), -1))
 
 # in/out dims
 input_dim = x_train[0].size
-n_classes = BLANK
+n_classes = 4
 
 # build layers
 layers = []
