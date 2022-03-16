@@ -13,7 +13,7 @@ np.random.seed(consts.SEED)
 x_train, y_train, x_val, y_val, x_test, y_test = utils.read_hw_data()
 
 # load and train
-n_classes = 4
+n_classes = len(np.unique(y_train))
 model = MulticlassLogisticRegression(x_train[0].size,
                                      consts.LR,
                                      n_classes)
