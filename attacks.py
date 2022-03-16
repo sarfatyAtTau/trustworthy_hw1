@@ -29,10 +29,22 @@ class FGSM(Attack):
     L_inf-norm).
     """
     def __init__(self, epsilon, loss=None):
-        pass
+        self.epsilon = epsilon
+        self.loss = loss
 
     def execute(self, model, x, y, targeted=False):
-        pass
+        models_grad = model.compute_dldi(x, y, clear_state=True, loss=self.loss).reshape(x.shape[0], -1)
+        if targeted:
+            delta = - self.epsilon * np.sign(models_grad)
+        else:
+            delta = self.epsilon * np.sign(models_grad)
+
+        assert (delta <= np.abs(self.epsilon)).all(), "Adverserial perturbation exceesds it's inf-norm"
+        x_adv = x + delta
+        x_adv = np.minimum(x_adv, 0.99)
+        x_adv = np.maximum(x_adv, 0.01)
+        assert (0 <= x_adv).all() and (x_adv <= 1).all(), "Adverserial example created is not in valid image range."
+        return x_adv
 
 class PGD(Attack):
     """
