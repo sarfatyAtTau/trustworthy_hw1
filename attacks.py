@@ -39,10 +39,12 @@ class FGSM(Attack):
         else:
             delta = self.epsilon * np.sign(models_grad)
 
-        assert (delta <= np.abs(self.epsilon)).all(), "Adverserial perturbation exceesds it's inf-norm"
+        assert (np.abs(delta) <= self.epsilon).all(), "Adverserial perturbation exceesds it's inf-norm"
+
+        # Clipping x_avd to the [0,1] range
         x_adv = x + delta
-        x_adv = np.minimum(x_adv, 0.99)
-        x_adv = np.maximum(x_adv, 0.01)
+        x_adv = np.minimum(x_adv, 1)
+        x_adv = np.maximum(x_adv, 0)
         assert (0 <= x_adv).all() and (x_adv <= 1).all(), "Adverserial example created is not in valid image range."
         return x_adv
 
@@ -53,7 +55,34 @@ class PGD(Attack):
     (there is no need to implement multiple restarts).
     """
     def __init__(self, epsilon, alpha, niters, loss=None):
-        pass
+        self.epsilon = epsilon
+        self.alpha = alpha
+        self.niters = niters
+        self.loss = loss
 
     def execute(self, model, x, y, targeted=False):
-        pass
+        initial_random_perturbation = self.epsilon * np.random.randn(x.shape[0], x.shape[1])
+        assert initial_random_perturbation.shape == x.shape, "Dimension problem: x.shape !== initial_random_perturbation.shape"
+        x_adv = x + initial_random_perturbation
+
+        for _ in range(self.niters):
+            models_grad = model.compute_dldi(x_adv, y, clear_state=True, loss=self.loss).reshape(x_adv.shape[0], -1)
+            if targeted:
+                delta = - self.alpha * np.sign(models_grad)
+            else:
+                delta = self.alpha * np.sign(models_grad)
+
+            x_adv = x_adv + delta
+
+            # Projecting delta from original x to ensure L_inf-norm restriction
+            # projected_delta_from_x = self.epsilon * np.tanh(x_adv - x)
+            projected_delta_from_x = np.minimum(self.epsilon, np.maximum(-self.epsilon, x_adv - x))
+            x_adv = x + projected_delta_from_x
+            assert (np.abs(projected_delta_from_x) <= self.epsilon).all(), "Adverserial perturbation exceesds it's inf-norm"
+
+        # Clipping x_avd to the [0,1] range
+        x_adv = np.minimum(x_adv, 1)
+        x_adv = np.maximum(x_adv, 0)
+        assert (0 <= x_adv).all() and (x_adv <= 1).all(), "Adverserial example created is not in valid image range."
+
+        return x_adv
